@@ -118,7 +118,7 @@ where
         }
     }
 
-    pub fn augment_path(&mut self, path: &Path<C>) -> C {
+    pub fn augment_path_by_min_capacity(&mut self, path: &Path<C>) -> C {
         let aug_value = path.min_capacity();
         self.augment_path_by_value(path, aug_value);
         aug_value
@@ -126,6 +126,16 @@ where
 
     pub fn flow_value(&self, s: Node, network: &Network<C>) -> C {
         network.adjacent(s).map(|e| self.edge_flows[e.id()]).sum()
+    }
+}
+
+impl <C> Display for Flow<C> where C: Display {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Flow [")?;
+        for (i, e) in self.edge_flows.iter().enumerate() {
+            writeln!(f, "[id={}] {}", i, e)?;
+        }
+        writeln!(f, "]")
     }
 }
 
@@ -192,9 +202,20 @@ impl<C> Path<C> {
     where
         C: Capacity,
     {
+        let mut cap = C::max_val();
+        for e in self {
+            cap = cap.min(*e.as_edge().capacity());
+        }
+        cap
+    }
+
+    fn min_aug_value(&self, flow: &Flow<C>) -> C
+    where
+        C: Capacity,
+    {
         let mut aug_value = C::max_val();
         for e in self {
-            aug_value = aug_value.min(*e.as_edge().capacity());
+            aug_value = aug_value.min(*e.as_edge().capacity() - flow[e.as_edge().id()]);
         }
         aug_value
     }
@@ -239,7 +260,7 @@ where
             let mut pred: Vec<Option<ResidualEdge<C>>> = vec![None; network.num_vertices()];
             let mut queue = VecDeque::<Node>::new();
             queue.push_back(s);
-            while let Some(v) = queue.pop_front() {
+            'bfs: while let Some(v) = queue.pop_front() {
                 for e in network.res_adjacent(v, &flow) {
                     let u = e.as_edge().t();
                     if pred[u].is_none() && u != s {
@@ -247,15 +268,14 @@ where
                         queue.push_back(u);
                     }
                     if u == t {
-                        break;
+                        break 'bfs;
                     }
                 }
             }
 
             if pred[t].is_some() {
                 let path = Path::from_pred(pred,  t);
-                println!("{}", path);
-                flow.augment_path(&path);
+                flow.augment_path_by_min_capacity(&path);
             } else {
                 break;
             }
@@ -305,9 +325,10 @@ impl Dinitz {
 
             if Some(&t) == stack.last() {
                 let path = Path::from_pred(pred, t);
-                let aug_value = blocking_flow.augment_path(&path);
+                let aug_value = path.min_aug_value(&blocking_flow);
+                blocking_flow.augment_path_by_value(&path, aug_value);
                 for e in &path {
-                    if &aug_value == e.as_edge().capacity() {
+                    if blocking_flow[e.as_edge().id()] == *e.as_edge().capacity() {
                         deleted.set(e.as_edge().id(), true);
                     }
                 }

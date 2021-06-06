@@ -103,9 +103,8 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(outgoing_edge_iter) = &mut self.outgoing_edge_iter {
-            if let Some((id, t)) = outgoing_edge_iter.next() {
+            while let Some((id, t)) = outgoing_edge_iter.next() {
                 let cap = self.capacities[*id];
-
                 return Some(Edge::new(self.node, *t, *id, cap));
             }
         }
@@ -130,7 +129,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(outgoing_edge_iter) = &mut self.outgoing_edge_iter {
-            if let Some((id, t)) = outgoing_edge_iter.next() {
+            while let Some((id, t)) = outgoing_edge_iter.next() {
                 let cap = self.capacities[*id];
                 let flow = self.flow[*id];
                 if flow < cap {
@@ -144,7 +143,7 @@ where
             }
         }
         if let Some(incoming_edge_iter) = &mut self.incoming_edge_iter {
-            if let Some((id, s)) = incoming_edge_iter.next() {
+            while let Some((id, s)) = incoming_edge_iter.next() {
                 let flow = self.flow[*id];
                 if flow > C::zero() {
                     return Some(ResidualEdge::Reversed(Edge::new(self.node, *s, *id, flow)));
