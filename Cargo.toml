@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 ordered-float = "2.5.1"
 num-traits = "0.2.14"
+fixedbitset = "0.4.0"
