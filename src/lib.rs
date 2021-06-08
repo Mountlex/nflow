@@ -455,25 +455,35 @@ where
         }
         self.excess[u] -= inc;
         self.excess[v] += inc;
-        println!("Push {} from {} to {}", inc, edge.as_edge().s(), edge.as_edge().t());
-
+        println!(
+            "Push {} from {} to {}",
+            inc,
+            edge.as_edge().s(),
+            edge.as_edge().t()
+        );
     }
 
     fn relabel(&mut self, node: Node) {
         debug_assert!(self.excess[node] > C::zero());
         if let Some(min_level) = self
-        .network
-        .res_adjacent(node, &self.preflow)
-        .map(|e| self.level[e.as_edge().t()])
-        .min()
+            .network
+            .res_adjacent(node, &self.preflow)
+            .map(|e| self.level[e.as_edge().t()])
+            .min()
         {
-            println!("Relabel node {} from {} to {}.", node, self.level[node], 1 + min_level);
+            println!(
+                "Relabel node {} from {} to {}.",
+                node,
+                self.level[node],
+                1 + min_level
+            );
             debug_assert!(self.level[node] <= min_level);
             self.level[node] = 1 + min_level;
         }
     }
 
-    fn discharge(&mut self, node: Node) {
+    fn discharge(&mut self, node: Node) -> Vec<Node> {
+        let mut pushed_nodes = Vec::new();
         while self.excess[node] > C::zero() {
             if let Some(edge) = self.network.adjacent_by_index(node, self.current_arc[node]) {
                 if let Some(res_edge) = edge.try_into_residual(&self.preflow) {
@@ -481,6 +491,7 @@ where
                     if self.level[res_edge.as_edge().s()] == self.level[res_edge.as_edge().t()] + 1
                     {
                         self.push(&res_edge);
+                        pushed_nodes.push(res_edge.as_edge().t());
                     } else {
                         self.current_arc[node] += 1;
                     }
@@ -493,6 +504,7 @@ where
                 self.current_arc[node] = 0;
             }
         }
+        pushed_nodes
     }
 }
 
@@ -511,14 +523,10 @@ where
 
     while let Some(v) = queue.pop_front() {
         println!("Discharging {}...", v);
-        pr.discharge(v);
+        let pushed = pr.discharge(v);
         println!("Preflow after discharging {}: {}", v, pr.preflow);
-        for e in network.adjacent(v) {
-            let u = match e {
-                AdjacentEdge::Incoming(e) => e.s(),
-                AdjacentEdge::Outgoing(e) => e.t()
-            } ;
-            if pr.is_active(u) && u != t && u != s && !queue.contains(&u) {
+        for u in pushed {
+            if u != t && u != s && !queue.contains(&u) {
                 queue.push_back(u);
             }
         }
@@ -532,7 +540,7 @@ where
     C: Capacity,
 {
     let mut pr = PushRelabel::init(s, t, network);
-    
+
     let mut max_height = 0;
     let mut heights: Vec<Vec<Node>> = vec![vec![]; 2 * network.num_vertices()];
     for e in network.outgoing(s) {
@@ -543,31 +551,17 @@ where
         }
     }
 
-
     while let Some(v) = heights[max_height].pop() {
-        let mut inactive = vec![];
-        for e in network.adjacent(v) {
-            let u = match e {
-                AdjacentEdge::Incoming(e) => e.s(),
-                AdjacentEdge::Outgoing(e) => e.t()
-            } ;
-            if !pr.is_active(u) && u != t && u != s {
-                inactive.push(u);   
-            }
-        }
-
         println!("Discharging {}...", v);
-        pr.discharge(v);
-        
-        if heights[max_height].is_empty() {
-            if max_height > 0 {
-                max_height -= 1;
-            }
+        let pushed = pr.discharge(v);
+
+        if heights[max_height].is_empty() && max_height > 1 {
+            max_height -= 2;
         }
         println!("Preflow after discharging {}: {}", v, pr.preflow);
-        for u in inactive {
-            if pr.is_active(u) {
-                let height = pr.height(u);
+        for u in pushed {
+            let height = pr.height(u);
+            if u != s && u != t && !heights[height].contains(&u) {
                 heights[height].push(u);
                 max_height = max_height.max(height);
             }
