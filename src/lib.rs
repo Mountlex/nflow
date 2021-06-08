@@ -395,9 +395,25 @@ impl<'a, C> PushRelabel<'a, C>
 where
     C: Capacity,
 {
-    fn init(s: Node, network: &'a Network<C>) -> Self {
+    fn init(s: Node, t: Node, network: &'a Network<C>) -> Self {
         let mut level = vec![0; network.num_vertices()];
         level[s] = network.num_vertices();
+
+        // Init height function by BFS
+        let mut queue = VecDeque::<Node>::new();
+        queue.push_back(t);
+        while let Some(v) = queue.pop_front() {
+            for e in network.adjacent(v) {
+                if let AdjacentEdge::Incoming(edge) = e {
+                    let u = edge.s();
+                    if level[u] == 0 {
+                        level[u] = level[v] + 1;
+                        queue.push_back(u);
+                    }
+                }
+            }
+        }
+
         let mut preflow = Flow::<C>::zero_flow(network.num_edges());
         let mut excess = vec![C::zero(); network.num_vertices()];
         for e in network.outgoing(s) {
@@ -412,6 +428,10 @@ where
             network,
             current_arc: vec![0; network.num_vertices()],
         }
+    }
+
+    fn height(&self, node: Node) -> usize {
+        self.level[node]
     }
 
     fn preflow(self) -> Flow<C> {
@@ -480,7 +500,7 @@ fn fifo_push_relabel<C>(network: &Network<C>, s: Node, t: Node) -> Flow<C>
 where
     C: Capacity,
 {
-    let mut pr = PushRelabel::init(s, network);
+    let mut pr = PushRelabel::init(s, t, network);
     let mut queue = VecDeque::<Node>::new();
 
     for e in network.outgoing(s) {
@@ -500,6 +520,56 @@ where
             } ;
             if pr.is_active(u) && u != t && u != s && !queue.contains(&u) {
                 queue.push_back(u);
+            }
+        }
+    }
+
+    pr.preflow()
+}
+
+fn max_height_push_relabel<C>(network: &Network<C>, s: Node, t: Node) -> Flow<C>
+where
+    C: Capacity,
+{
+    let mut pr = PushRelabel::init(s, t, network);
+    
+    let mut max_height = 0;
+    let mut heights: Vec<Vec<Node>> = vec![vec![]; 2 * network.num_vertices()];
+    for e in network.outgoing(s) {
+        if e.t() != t {
+            let height = pr.height(e.t());
+            heights[height].push(e.t());
+            max_height = max_height.max(height);
+        }
+    }
+
+
+    while let Some(v) = heights[max_height].pop() {
+        let mut inactive = vec![];
+        for e in network.adjacent(v) {
+            let u = match e {
+                AdjacentEdge::Incoming(e) => e.s(),
+                AdjacentEdge::Outgoing(e) => e.t()
+            } ;
+            if !pr.is_active(u) && u != t && u != s {
+                inactive.push(u);   
+            }
+        }
+
+        println!("Discharging {}...", v);
+        pr.discharge(v);
+        
+        if heights[max_height].is_empty() {
+            if max_height > 0 {
+                max_height -= 1;
+            }
+        }
+        println!("Preflow after discharging {}: {}", v, pr.preflow);
+        for u in inactive {
+            if pr.is_active(u) {
+                let height = pr.height(u);
+                heights[height].push(u);
+                max_height = max_height.max(height);
             }
         }
     }
@@ -592,6 +662,13 @@ mod test_max_flow {
     }
 
     #[test]
+    fn test_max_height_small() {
+        let n = network_small();
+        let flow = max_height_push_relabel(&n, 0, 3);
+        assert_eq!(flow.flow_value(0, &n), OrderedFloat(7.0));
+    }
+
+    #[test]
     fn test_edmonds_karp_large() {
         let n = network_large();
         let flow = EdmondsKarp::max_flow(&n, 0, 8);
@@ -609,6 +686,13 @@ mod test_max_flow {
     fn test_fifo_large() {
         let n = network_large();
         let flow = fifo_push_relabel(&n, 0, 8);
+        assert_eq!(flow.flow_value(0, &n), OrderedFloat(15.0));
+    }
+
+    #[test]
+    fn test_max_height_large() {
+        let n = network_large();
+        let flow = max_height_push_relabel(&n, 0, 8);
         assert_eq!(flow.flow_value(0, &n), OrderedFloat(15.0));
     }
 }

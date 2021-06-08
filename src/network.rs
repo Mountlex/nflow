@@ -263,7 +263,6 @@ where
 }
 
 /// Iterator over edges in the residual network.
-/// TODO: rewrite via AdjacentEdge::try_into_residual
 pub struct ResidualAdjacentEdges<'a, C> {
     flow: &'a Flow<C>,
     adjacent_edge_iter: AdjacentEdges<'a, C>,
