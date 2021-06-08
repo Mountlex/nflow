@@ -54,10 +54,40 @@ impl<C> Network<C> {
         self.capacities.get(id).unwrap()
     }
 
-    pub fn res_adjacent<'a>(&'a self, node: Node, flow: &'a Flow<C>) -> ResidualAdjacentEdges<C> {
-        ResidualAdjacentEdges {
+    pub fn num_outgoing_edges(&self, node: Node) -> usize {
+        (&self.outgoing[node])
+            .as_ref()
+            .map(|e| e.len())
+            .unwrap_or_else(|| 0)
+    }
+
+    pub fn num_incoming_edges(&self, node: Node) -> usize {
+        (&self.incoming[node])
+            .as_ref()
+            .map(|e| e.len())
+            .unwrap_or_else(|| 0)
+    }
+
+    pub fn num_adjacent_edges(&self, node: Node) -> usize {
+        self.num_incoming_edges(node) + self.num_outgoing_edges(node)
+    }
+
+    pub fn outgoing(&self, node: Node) -> OutgoingEdges<C> {
+        OutgoingEdges {
             node,
-            flow,
+            capacities: &self.capacities,
+            outgoing_edge_iter: self
+                .outgoing
+                .get(node)
+                .unwrap()
+                .as_ref()
+                .map(|hm| hm.iter()),
+        }
+    }
+
+    pub fn adjacent<'a>(&'a self, node: Node) -> AdjacentEdges<C> {
+        AdjacentEdges {
+            node,
             capacities: &self.capacities,
             outgoing_edge_iter: self
                 .outgoing
@@ -74,28 +104,110 @@ impl<C> Network<C> {
         }
     }
 
-    pub fn adjacent(&self, node: Node) -> AdjacentEdges<C> {
-        AdjacentEdges {
-            node,
-            capacities: &self.capacities,
-            outgoing_edge_iter: self
-                .outgoing
-                .get(node)
-                .unwrap()
-                .as_ref()
-                .map(|hm| hm.iter()),
+    pub fn res_adjacent<'a>(&'a self, node: Node, flow: &'a Flow<C>) -> ResidualAdjacentEdges<C> {
+        ResidualAdjacentEdges {
+            flow,
+            adjacent_edge_iter: self.adjacent(node),
         }
     }
 }
 
-/// Iterator over edges in the network.
-pub struct AdjacentEdges<'a, C> {
+impl<C> Network<C>
+where
+    C: Capacity,
+{
+    pub fn adjacent_by_index(&self, node: Node, index: usize) -> Option<AdjacentEdge<C>> {
+        let mut offset: usize = 0;
+        if let Some(outgoing) = &self.outgoing[node] {
+            if index < outgoing.len() {
+                let (id, t) = outgoing[index];
+                return Some(AdjacentEdge::Outgoing(Edge::new(
+                    node,
+                    t,
+                    id,
+                    *self.capacity(id),
+                )));
+            } else {
+                offset = outgoing.len();
+            }
+        }
+        if let Some(incoming) = &self.incoming[node] {
+            if index - offset < incoming.len() {
+                let (id, s) = incoming[index - offset];
+                return Some(AdjacentEdge::Incoming(Edge::new(
+                    s,
+                    node,
+                    id,
+                    *self.capacity(id),
+                )));
+            }
+        }
+        None
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum AdjacentEdge<C> {
+    Incoming(Edge<C>),
+    Outgoing(Edge<C>),
+}
+
+impl<C> AdjacentEdge<C> {
+    pub fn as_edge(&self) -> &Edge<C> {
+        match self {
+            Self::Incoming(e) => e,
+            Self::Outgoing(e) => e,
+        }
+    }
+
+    pub fn into_edge(self) -> Edge<C> {
+        match self {
+            Self::Incoming(e) => e,
+            Self::Outgoing(e) => e,
+        }
+    }
+}
+impl<C> AdjacentEdge<C>
+where
+    C: Capacity,
+{
+    pub fn try_into_residual(self, flow: &Flow<C>) -> Option<ResidualEdge<C>> {
+        match self {
+            Self::Outgoing(e) => {
+                if flow[e.id()] < *e.capacity() {
+                    Some(ResidualEdge::Directed(Edge::new(
+                        e.s(),
+                        e.t(),
+                        e.id(),
+                        *e.capacity() - flow[e.id()],
+                    )))
+                } else {
+                    None
+                }
+            }
+            Self::Incoming(e) => {
+                if flow[e.id()] > C::zero() {
+                    Some(ResidualEdge::Reversed(Edge::new(
+                        e.t(),
+                        e.s(),
+                        e.id(),
+                        flow[e.id()],
+                    )))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+/// Iterator over the outgoing edges of a node.
+pub struct OutgoingEdges<'a, C> {
     node: Node,
     capacities: &'a Vec<C>,
     outgoing_edge_iter: Option<std::slice::Iter<'a, (EdgeId, Node)>>,
 }
 
-impl<'a, C> Iterator for AdjacentEdges<'a, C>
+impl<'a, C> Iterator for OutgoingEdges<'a, C>
 where
     C: Capacity,
 {
@@ -112,13 +224,49 @@ where
     }
 }
 
-/// Iterator over edges in the residual network.
-pub struct ResidualAdjacentEdges<'a, C> {
+pub struct AdjacentEdges<'a, C> {
     node: Node,
-    flow: &'a Flow<C>,
     capacities: &'a Vec<C>,
     outgoing_edge_iter: Option<std::slice::Iter<'a, (EdgeId, Node)>>,
     incoming_edge_iter: Option<std::slice::Iter<'a, (EdgeId, Node)>>,
+}
+
+impl<'a, C> Iterator for AdjacentEdges<'a, C>
+where
+    C: Capacity,
+{
+    type Item = AdjacentEdge<C>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(outgoing_edge_iter) = &mut self.outgoing_edge_iter {
+            while let Some((id, t)) = outgoing_edge_iter.next() {
+                return Some(AdjacentEdge::Outgoing(Edge::new(
+                    self.node,
+                    *t,
+                    *id,
+                    self.capacities[*id],
+                )));
+            }
+        }
+        if let Some(incoming_edge_iter) = &mut self.incoming_edge_iter {
+            while let Some((id, s)) = incoming_edge_iter.next() {
+                return Some(AdjacentEdge::Incoming(Edge::new(
+                    *s,
+                    self.node,
+                    *id,
+                    self.capacities[*id],
+                )));
+            }
+        }
+        None
+    }
+}
+
+/// Iterator over edges in the residual network.
+/// TODO: rewrite via AdjacentEdge::try_into_residual
+pub struct ResidualAdjacentEdges<'a, C> {
+    flow: &'a Flow<C>,
+    adjacent_edge_iter: AdjacentEdges<'a, C>,
 }
 
 impl<'a, C> Iterator for ResidualAdjacentEdges<'a, C>
@@ -128,26 +276,9 @@ where
     type Item = ResidualEdge<C>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(outgoing_edge_iter) = &mut self.outgoing_edge_iter {
-            while let Some((id, t)) = outgoing_edge_iter.next() {
-                let cap = self.capacities[*id];
-                let flow = self.flow[*id];
-                if flow < cap {
-                    return Some(ResidualEdge::Directed(Edge::new(
-                        self.node,
-                        *t,
-                        *id,
-                        cap - flow,
-                    )));
-                }
-            }
-        }
-        if let Some(incoming_edge_iter) = &mut self.incoming_edge_iter {
-            while let Some((id, s)) = incoming_edge_iter.next() {
-                let flow = self.flow[*id];
-                if flow > C::zero() {
-                    return Some(ResidualEdge::Reversed(Edge::new(self.node, *s, *id, flow)));
-                }
+        while let Some(edge) = self.adjacent_edge_iter.next() {
+            if let Some(res_edge) = edge.try_into_residual(self.flow) {
+                return Some(res_edge);
             }
         }
         None

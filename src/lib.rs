@@ -1,10 +1,15 @@
-use std::{collections::VecDeque, fmt::{Display, Formatter}, iter::Sum, ops::{Add, AddAssign, Index, IndexMut, Sub, SubAssign}};
+use std::{
+    collections::VecDeque,
+    fmt::{Display, Formatter},
+    iter::Sum,
+    ops::{Add, AddAssign, Index, IndexMut, Sub, SubAssign},
+};
 
 use fixedbitset::FixedBitSet;
 use network::Network;
 use ordered_float::OrderedFloat;
 
-use crate::level::LevelGraph;
+use crate::{level::LevelGraph, network::AdjacentEdge};
 
 mod level;
 mod network;
@@ -14,7 +19,17 @@ type Node = usize;
 type EdgeId = usize;
 
 pub trait Capacity:
-    PartialEq + PartialOrd + Ord + Eq + Copy + Sub<Output = Self> + SubAssign + Add + AddAssign + Sum + Display
+    PartialEq
+    + PartialOrd
+    + Ord
+    + Eq
+    + Copy
+    + Sub<Output = Self>
+    + SubAssign
+    + Add
+    + AddAssign
+    + Sum
+    + Display
 {
     fn zero() -> Self;
     fn max_val() -> Self;
@@ -57,10 +72,16 @@ impl<C> Edge<C> {
     }
 }
 
-
-impl <C> Display for Edge<C> where C: Display {
+impl<C> Display for Edge<C>
+where
+    C: Display,
+{
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} --> {} [cap={}, id={}]", self.s, self.t, self.capacity, self.id)
+        write!(
+            f,
+            "{} --> {} [cap={}, id={}]",
+            self.s, self.t, self.capacity, self.id
+        )
     }
 }
 
@@ -86,7 +107,10 @@ impl<C> ResidualEdge<C> {
     }
 }
 
-impl <C> Display for ResidualEdge<C> where C: Display {
+impl<C> Display for ResidualEdge<C>
+where
+    C: Display,
+{
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             ResidualEdge::Directed(e) => write!(f, "ResDi {}", e),
@@ -125,11 +149,14 @@ where
     }
 
     pub fn flow_value(&self, s: Node, network: &Network<C>) -> C {
-        network.adjacent(s).map(|e| self.edge_flows[e.id()]).sum()
+        network.outgoing(s).map(|e| self.edge_flows[e.id()]).sum()
     }
 }
 
-impl <C> Display for Flow<C> where C: Display {
+impl<C> Display for Flow<C>
+where
+    C: Display,
+{
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Flow [")?;
         for (i, e) in self.edge_flows.iter().enumerate() {
@@ -221,7 +248,10 @@ impl<C> Path<C> {
     }
 }
 
-impl <C> Display for Path<C> where C: Display {
+impl<C> Display for Path<C>
+where
+    C: Display,
+{
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Path [")?;
         for e in self {
@@ -274,7 +304,7 @@ where
             }
 
             if pred[t].is_some() {
-                let path = Path::from_pred(pred,  t);
+                let path = Path::from_pred(pred, t);
                 flow.augment_path_by_min_capacity(&path);
             } else {
                 break;
@@ -353,6 +383,130 @@ where
     }
 }
 
+struct PushRelabel<'a, C> {
+    level: Vec<usize>,
+    excess: Vec<C>,
+    preflow: Flow<C>,
+    network: &'a Network<C>,
+    current_arc: Vec<usize>,
+}
+
+impl<'a, C> PushRelabel<'a, C>
+where
+    C: Capacity,
+{
+    fn init(s: Node, network: &'a Network<C>) -> Self {
+        let mut level = vec![0; network.num_vertices()];
+        level[s] = network.num_vertices();
+        let mut preflow = Flow::<C>::zero_flow(network.num_edges());
+        let mut excess = vec![C::zero(); network.num_vertices()];
+        for e in network.outgoing(s) {
+            preflow[e.id()] = *e.capacity();
+            excess[e.t()] = *e.capacity();
+        }
+
+        PushRelabel {
+            level,
+            excess,
+            preflow,
+            network,
+            current_arc: vec![0; network.num_vertices()],
+        }
+    }
+
+    fn preflow(self) -> Flow<C> {
+        self.preflow
+    }
+
+    fn is_active(&self, v: Node) -> bool {
+        self.excess[v] > C::zero()
+    }
+
+    fn push(&mut self, edge: &ResidualEdge<C>) {
+        let id = edge.as_edge().id();
+        let u = edge.as_edge().s();
+        let v = edge.as_edge().t();
+        debug_assert!(self.excess[u] > C::zero());
+        debug_assert!(self.level[u] == self.level[v] + 1);
+        let inc = self.excess[u].min(*edge.as_edge().capacity());
+        match edge {
+            ResidualEdge::Directed(_) => self.preflow[id] += inc,
+            ResidualEdge::Reversed(_) => self.preflow[id] -= inc,
+        }
+        self.excess[u] -= inc;
+        self.excess[v] += inc;
+        println!("Push {} from {} to {}", inc, edge.as_edge().s(), edge.as_edge().t());
+
+    }
+
+    fn relabel(&mut self, node: Node) {
+        debug_assert!(self.excess[node] > C::zero());
+        if let Some(min_level) = self
+        .network
+        .res_adjacent(node, &self.preflow)
+        .map(|e| self.level[e.as_edge().t()])
+        .min()
+        {
+            println!("Relabel node {} from {} to {}.", node, self.level[node], 1 + min_level);
+            debug_assert!(self.level[node] <= min_level);
+            self.level[node] = 1 + min_level;
+        }
+    }
+
+    fn discharge(&mut self, node: Node) {
+        while self.excess[node] > C::zero() {
+            if let Some(edge) = self.network.adjacent_by_index(node, self.current_arc[node]) {
+                if let Some(res_edge) = edge.try_into_residual(&self.preflow) {
+                    println!("Discharging {}: Edge {}", node, res_edge.as_edge());
+                    if self.level[res_edge.as_edge().s()] == self.level[res_edge.as_edge().t()] + 1
+                    {
+                        self.push(&res_edge);
+                    } else {
+                        self.current_arc[node] += 1;
+                    }
+                } else {
+                    self.current_arc[node] += 1;
+                }
+            } else {
+                debug_assert!(self.current_arc[node] == self.network.num_adjacent_edges(node));
+                self.relabel(node);
+                self.current_arc[node] = 0;
+            }
+        }
+    }
+}
+
+fn fifo_push_relabel<C>(network: &Network<C>, s: Node, t: Node) -> Flow<C>
+where
+    C: Capacity,
+{
+    let mut pr = PushRelabel::init(s, network);
+    let mut queue = VecDeque::<Node>::new();
+
+    for e in network.outgoing(s) {
+        if e.t() != t {
+            queue.push_back(e.t());
+        }
+    }
+
+    while let Some(v) = queue.pop_front() {
+        println!("Discharging {}...", v);
+        pr.discharge(v);
+        println!("Preflow after discharging {}: {}", v, pr.preflow);
+        for e in network.adjacent(v) {
+            let u = match e {
+                AdjacentEdge::Incoming(e) => e.s(),
+                AdjacentEdge::Outgoing(e) => e.t()
+            } ;
+            if pr.is_active(u) && u != t && u != s && !queue.contains(&u) {
+                queue.push_back(u);
+            }
+        }
+    }
+
+    pr.preflow()
+}
+
 #[cfg(test)]
 mod test_max_flow {
     use super::*;
@@ -367,7 +521,7 @@ mod test_max_flow {
         n
     }
 
-    fn check_network_small(flow: Flow<OrderedFloat<f64>>, n: &Network<OrderedFloat<f64>>){
+    fn check_network_small(flow: Flow<OrderedFloat<f64>>, n: &Network<OrderedFloat<f64>>) {
         assert_eq!(flow.flow_value(0, &n), OrderedFloat(7.0));
         assert_eq!(flow[0], OrderedFloat(5.0));
         assert_eq!(flow[1], OrderedFloat(2.0));
@@ -394,7 +548,7 @@ mod test_max_flow {
         n
     }
 
-    fn check_network_large(flow: Flow<OrderedFloat<f64>>, n: &Network<OrderedFloat<f64>>){
+    fn check_network_large(flow: Flow<OrderedFloat<f64>>, n: &Network<OrderedFloat<f64>>) {
         assert_eq!(flow.flow_value(0, &n), OrderedFloat(15.0));
         assert_eq!(flow[0], OrderedFloat(9.0));
         assert_eq!(flow[1], OrderedFloat(5.0));
@@ -426,6 +580,18 @@ mod test_max_flow {
     }
 
     #[test]
+    fn test_fifo_small() {
+        let n = network_small();
+        let flow = fifo_push_relabel(&n, 0, 3);
+        assert_eq!(flow.flow_value(0, &n), OrderedFloat(7.0));
+        assert_eq!(flow[0], OrderedFloat(6.0));
+        assert_eq!(flow[1], OrderedFloat(1.0));
+        assert_eq!(flow[2], OrderedFloat(3.0));
+        assert_eq!(flow[3], OrderedFloat(3.0));
+        assert_eq!(flow[4], OrderedFloat(4.0));
+    }
+
+    #[test]
     fn test_edmonds_karp_large() {
         let n = network_large();
         let flow = EdmondsKarp::max_flow(&n, 0, 8);
@@ -437,5 +603,12 @@ mod test_max_flow {
         let n = network_large();
         let flow = Dinitz::max_flow(&n, 0, 8);
         check_network_large(flow, &n);
+    }
+
+    #[test]
+    fn test_fifo_large() {
+        let n = network_large();
+        let flow = fifo_push_relabel(&n, 0, 8);
+        assert_eq!(flow.flow_value(0, &n), OrderedFloat(15.0));
     }
 }
